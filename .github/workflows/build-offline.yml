@@ -11,7 +11,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest   # 必须用 Windows 环境，保证打包出的文件结构和你的内网机一致
+    runs-on: windows-latest
 
     steps:
       - name: 安装 Node.js
@@ -32,7 +32,9 @@ jobs:
         shell: pwsh
         run: |
           $npmRoot = npm root -g
-          $npmBin = npm bin -g
+          # 获取全局 bin 目录的正确方式
+          $npmPrefix = npm prefix -g
+          $npmBin = "$npmPrefix"
           echo "NPM_ROOT=$npmRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "NPM_BIN=$npmBin" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "全局 node_modules: $npmRoot"
@@ -41,12 +43,13 @@ jobs:
       - name: 打包整个全局 npm 目录
         shell: pwsh
         run: |
-          # 获取版本号
           $version = node -p "require('$env:NPM_ROOT/gitnexus/package.json').version" 2>$null
           if (-not $version) { $version = "latest" }
           
-          # 打包整个 npm 目录（包含 node_modules 和 bin 文件）
+          # 获取 npm 全局目录的父目录（包含 node_modules 和可执行文件）
           $npmDir = Split-Path $env:NPM_ROOT
+          
+          # 打包整个 npm 目录
           7z a -tzip "gitnexus-portable-${version}.zip" "$npmDir\*"
           
           echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
