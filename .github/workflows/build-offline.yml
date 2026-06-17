@@ -1,0 +1,64 @@
+name: Build GitNexus Offline Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'GitNexus 版本号（留空则安装最新版）'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装 npm-bundle
+        run: npm install -g npm-bundle
+
+      - name: 准备项目目录
+        run: |
+          mkdir gitnexus-offline
+          cd gitnexus-offline
+          npm init -y
+
+      - name: 安装 GitNexus
+        run: |
+          cd gitnexus-offline
+          if [ -z "${{ github.event.inputs.version }}" ]; then
+            npm install gitnexus --save
+          else
+            npm install gitnexus@${{ github.event.inputs.version }} --save
+          fi
+
+      - name: 修改 package.json name
+        run: |
+          cd gitnexus-offline
+          sed -i 's/"name": "gitnexus-offline"/"name": "gitnexus-bundle"/' package.json
+
+      - name: 使用 npm-bundle 打包
+        run: |
+          cd gitnexus-offline
+          npm-bundle
+
+      - name: 重命名生成的包文件
+        run: |
+          cd gitnexus-offline
+          VERSION=$(node -p "require('./node_modules/gitnexus/package.json').version" 2>/dev/null || echo "latest")
+          find . -name "*.tar.gz" -exec mv {} "../gitnexus-${VERSION}-full.tar.gz" \;
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitnexus-offline-package
+          path: gitnexus-*.tar.gz
+          retention-days: 7
