@@ -1,4 +1,4 @@
-name: Build GitNexus Offline Package
+name: Build GitNexus Portable Package
 
 on:
   workflow_dispatch:
@@ -11,37 +11,50 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest   # 必须用 Windows 环境，保证打包出的文件结构和你的内网机一致
 
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: 安装 GitNexus 及其依赖
+      - name: 全局安装 GitNexus
+        shell: pwsh
         run: |
-          mkdir gitnexus-offline
-          cd gitnexus-offline
-          npm init -y
-          if [ -z "${{ github.event.inputs.version }}" ]; then
-            npm install gitnexus --save
-          else
-            npm install gitnexus@${{ github.event.inputs.version }} --save
-          fi
+          if ([string]::IsNullOrEmpty("${{ github.event.inputs.version }}")) {
+            npm install -g gitnexus
+          } else {
+            npm install -g gitnexus@${{ github.event.inputs.version }}
+          }
 
-      - name: 打包完整离线包
+      - name: 获取全局安装路径
+        shell: pwsh
         run: |
-          cd gitnexus-offline
-          VERSION=$(node -p "require('./node_modules/gitnexus/package.json').version" 2>/dev/null || echo "latest")
-          tar -czf "../gitnexus-${VERSION}-full.tar.gz" node_modules package.json package-lock.json
+          $npmRoot = npm root -g
+          $npmBin = npm bin -g
+          echo "NPM_ROOT=$npmRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "NPM_BIN=$npmBin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "全局 node_modules: $npmRoot"
+          echo "全局 bin: $npmBin"
+
+      - name: 打包整个全局 npm 目录
+        shell: pwsh
+        run: |
+          # 获取版本号
+          $version = node -p "require('$env:NPM_ROOT/gitnexus/package.json').version" 2>$null
+          if (-not $version) { $version = "latest" }
+          
+          # 打包整个 npm 目录（包含 node_modules 和 bin 文件）
+          $npmDir = Split-Path $env:NPM_ROOT
+          7z a -tzip "gitnexus-portable-${version}.zip" "$npmDir\*"
+          
+          echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "打包完成: gitnexus-portable-${version}.zip"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: gitnexus-offline-package
-          path: gitnexus-*.tar.gz
+          name: gitnexus-portable-package
+          path: gitnexus-portable-*.zip
           retention-days: 7
