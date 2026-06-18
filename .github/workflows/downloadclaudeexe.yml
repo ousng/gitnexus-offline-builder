@@ -1,0 +1,50 @@
+name: Download and Extract claude.exe.zst
+
+on:
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  download-and-extract:
+    runs-on: windows-latest  # 使用 Windows 环境
+
+    steps:
+      - name: Install Zstandard tool
+        shell: pwsh
+        run: |
+          Write-Host "📦 安装 Zstandard 解压工具..."
+          # 使用 winget 安装 zstd
+          winget install --id Facebook.Zstandard -e --silent
+          # 或者通过 Chocolatey 安装（备选）
+          # choco install zstandard -y
+
+      - name: Download claude.exe.zst
+        shell: pwsh
+        run: |
+          $url = "https://downloads.claude.ai/claude-code-releases/2.1.161/win32-x64/claude.exe.zst"
+          $output = "claude.exe.zst"
+          Write-Host "📥 开始下载 claude.exe.zst..."
+          Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 60
+          Write-Host "✅ 下载完成，文件大小: $([math]::Round((Get-Item $output).Length / 1MB, 2)) MB"
+
+      - name: Extract claude.exe from .zst
+        shell: pwsh
+        run: |
+          Write-Host "📦 解压 claude.exe.zst..."
+          # 使用 zstd 解压
+          zstd -d claude.exe.zst -o claude.exe
+          Write-Host "✅ 解压完成，文件大小: $([math]::Round((Get-Item 'claude.exe').Length / 1MB, 2)) MB"
+
+      - name: Package as ZIP
+        shell: pwsh
+        run: |
+          Write-Host "📦 打包为 ZIP 文件..."
+          # 压缩成 zip
+          Compress-Archive -Path "claude.exe" -DestinationPath "claude-2.1.161-win32-x64.zip" -Force
+          Write-Host "✅ 打包完成，文件大小: $([math]::Round((Get-Item 'claude-2.1.161-win32-x64.zip').Length / 1MB, 2)) MB"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-2.1.161-win32-x64
+          path: claude-2.1.161-win32-x64.zip
+          retention-days: 7
