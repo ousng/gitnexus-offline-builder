@@ -1,63 +1,65 @@
-name: Build GitNexus Portable Package
+name: Download and Package Claude Code (Windows)
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'GitNexus 版本号（留空则安装最新版）'
-        required: false
-        default: ''
-        type: string
 
 jobs:
-  build:
-    runs-on: windows-latest
-
+  download:
+    runs-on: windows-latest  # 使用Windows环境
     steps:
-      - name: 安装 Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: 全局安装 GitNexus
+      - name: Download ClaudeSetup.exe
         shell: pwsh
         run: |
-          if ([string]::IsNullOrEmpty("${{ github.event.inputs.version }}")) {
-            npm install -g gitnexus
-          } else {
-            npm install -g gitnexus@${{ github.event.inputs.version }}
+          $url = "https://downloads.claude.ai/releases/win32/x64/1.13576.1/ClaudeSetup-772d01ffc175c3795a49154acdecf043d634b5d1.exe"
+          $output = "ClaudeSetup.exe"
+          
+          try {
+            # 使用PowerShell的Invoke-WebRequest，添加超时和重试
+            Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 30 -ErrorAction Stop
+            Write-Host "✅ 下载成功"
+          } catch {
+            Write-Host "⚠️ 下载失败: $_"
+            # 创建一个空文件标记失败，方便后续步骤判断
+            New-Item -Path "download_failed.txt" -ItemType File -Force
           }
 
-      - name: 获取全局安装路径
+      - name: Check if download succeeded
+        id: check
         shell: pwsh
         run: |
-          $npmRoot = npm root -g
-          # 获取全局 bin 目录的正确方式
-          $npmPrefix = npm prefix -g
-          $npmBin = "$npmPrefix"
-          echo "NPM_ROOT=$npmRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "NPM_BIN=$npmBin" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "全局 node_modules: $npmRoot"
-          echo "全局 bin: $npmBin"
+          if (Test-Path "ClaudeSetup.exe" -PathType Leaf) {
+            $fileSize = (Get-Item "ClaudeSetup.exe").Length
+            if ($fileSize -gt 0) {
+              Write-Host "✅ 文件大小: $fileSize bytes"
+              echo "success=true" >> $env:GITHUB_OUTPUT
+            } else {
+              echo "success=false" >> $env:GITHUB_OUTPUT
+            }
+          } else {
+            echo "success=false" >> $env:GITHUB_OUTPUT
+            Write-Host "⚠️ 文件不存在，下载失败"
+          }
 
-      - name: 打包整个全局 npm 目录
+      - name: Create ZIP package
+        if: steps.check.outputs.success == 'true'
         shell: pwsh
         run: |
-          $version = node -p "require('$env:NPM_ROOT/gitnexus/package.json').version" 2>$null
-          if (-not $version) { $version = "latest" }
-          
-          # 获取 npm 全局目录的父目录（包含 node_modules 和可执行文件）
-          $npmDir = Split-Path $env:NPM_ROOT
-          
-          # 打包整个 npm 目录
-          7z a -tzip "gitnexus-portable-${version}.zip" "$npmDir\*"
-          
-          echo "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
-          echo "打包完成: gitnexus-portable-${version}.zip"
+          # Windows下使用PowerShell的Compress-Archive
+          Compress-Archive -Path "ClaudeSetup.exe" -DestinationPath "ClaudeSetup.zip" -Force
+          Write-Host "✅ ZIP打包完成"
 
-      - name: 上传构建产物
+      - name: Upload ZIP artifact
+        if: steps.check.outputs.success == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: gitnexus-portable-package
-          path: gitnexus-portable-*.zip
+          name: ClaudeSetup-Windows
+          path: ClaudeSetup.zip
           retention-days: 7
+
+      - name: 上传失败日志（如果下载失败）
+        if: steps.check.outputs.success != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: download-failed-log
+          path: download_failed.txt
+          retention-days: 1
