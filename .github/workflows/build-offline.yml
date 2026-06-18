@@ -1,65 +1,101 @@
-name: Download and Package Claude Code (Windows)
+name: Download Claude Code Full Installer (Windows x64)
 
 on:
   workflow_dispatch:
 
 jobs:
   download:
-    runs-on: windows-latest  # 使用Windows环境
+    runs-on: windows-latest
     steps:
-      - name: Download ClaudeSetup.exe
+      - name: Check System Architecture
+        shell: pwsh
+        run: |
+          Write-Host "🏗️ 系统架构: $env:PROCESSOR_ARCHITECTURE"
+          Write-Host "🖥️ 操作系统: $((Get-CimInstance Win32_OperatingSystem).Caption)"
+
+      - name: Download Bootstrapper
         shell: pwsh
         run: |
           $url = "https://downloads.claude.ai/releases/win32/x64/1.13576.1/ClaudeSetup-772d01ffc175c3795a49154acdecf043d634b5d1.exe"
           $output = "ClaudeSetup.exe"
           
+          Write-Host "📥 开始下载引导程序..."
+          Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 30 -ErrorAction Stop
+          
+          if (Test-Path $output) {
+            $size = [math]::Round((Get-Item $output).Length / 1MB, 2)
+            Write-Host "✅ 引导程序下载完成，大小: $size MB"
+          }
+
+      - name: Run Bootstrapper and Capture Files
+        shell: pwsh
+        run: |
+          Write-Host "🚀 启动引导程序（静默模式）..."
+          
+          # 尝试静默运行，并等待最多 5 分钟
           try {
-            # 使用PowerShell的Invoke-WebRequest，添加超时和重试
-            Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 30 -ErrorAction Stop
-            Write-Host "✅ 下载成功"
+            $process = Start-Process -FilePath ".\ClaudeSetup.exe" `
+              -ArgumentList "/quiet", "/norestart", "/log", "install.log" `
+              -PassThru -Wait -Timeout 300
+            Write-Host "✅ 引导程序执行完毕，退出代码: $($process.ExitCode)"
           } catch {
-            Write-Host "⚠️ 下载失败: $_"
-            # 创建一个空文件标记失败，方便后续步骤判断
-            New-Item -Path "download_failed.txt" -ItemType File -Force
+            Write-Host "⚠️ 引导程序执行异常: $_"
           }
 
-      - name: Check if download succeeded
-        id: check
+      - name: Locate Downloaded Files
+        id: locate
         shell: pwsh
         run: |
-          if (Test-Path "ClaudeSetup.exe" -PathType Leaf) {
-            $fileSize = (Get-Item "ClaudeSetup.exe").Length
-            if ($fileSize -gt 0) {
-              Write-Host "✅ 文件大小: $fileSize bytes"
-              echo "success=true" >> $env:GITHUB_OUTPUT
-            } else {
-              echo "success=false" >> $env:GITHUB_OUTPUT
+          $searchPaths = @(
+            "$env:TEMP",
+            "$env:LOCALAPPDATA\Temp",
+            "$env:ProgramData\Package Cache",
+            "$PWD"  # 当前工作目录
+          )
+          
+          $found = @()
+          foreach ($path in $searchPaths) {
+            if (Test-Path $path) {
+              Write-Host "🔍 搜索路径: $path"
+              # 查找大于 50MB 且最近 1 小时创建的文件
+              $files = Get-ChildItem -Path $path -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { 
+                  $_.Length -gt 50MB -and 
+                  $_.LastWriteTime -gt (Get-Date).AddHours(-1) 
+                }
+              foreach ($f in $files) {
+                Write-Host "  📁 找到: $($f.FullName) ($([math]::Round($f.Length/1MB,2)) MB)"
+                $found += $f.FullName
+              }
             }
+          }
+          
+          if ($found.Count -gt 0) {
+            $found | Out-File -FilePath "found_files.txt"
+            echo "success=true" >> $env:GITHUB_OUTPUT
           } else {
+            Write-Host "⚠️ 未找到任何大文件（>50MB），可能下载失败或文件已被清理。"
             echo "success=false" >> $env:GITHUB_OUTPUT
-            Write-Host "⚠️ 文件不存在，下载失败"
           }
 
-      - name: Create ZIP package
-        if: steps.check.outputs.success == 'true'
+      - name: Package and Upload
+        if: steps.locate.outputs.success == 'true'
         shell: pwsh
         run: |
-          # Windows下使用PowerShell的Compress-Archive
-          Compress-Archive -Path "ClaudeSetup.exe" -DestinationPath "ClaudeSetup.zip" -Force
-          Write-Host "✅ ZIP打包完成"
+          $files = Get-Content "found_files.txt"
+          New-Item -ItemType Directory -Path "InstallerPackage" -Force
+          
+          foreach ($f in $files) {
+            Copy-Item -Path $f -Destination "InstallerPackage\" -Force
+          }
+          
+          Compress-Archive -Path "InstallerPackage\*" -DestinationPath "ClaudeCode_FullInstaller_x64.zip" -Force
+          Write-Host "✅ 打包完成，文件大小: $([math]::Round((Get-Item 'ClaudeCode_FullInstaller_x64.zip').Length/1MB, 2)) MB"
 
-      - name: Upload ZIP artifact
-        if: steps.check.outputs.success == 'true'
+      - name: Upload Artifact
+        if: steps.locate.outputs.success == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ClaudeSetup-Windows
-          path: ClaudeSetup.zip
+          name: ClaudeCode_x64_FullInstaller
+          path: ClaudeCode_FullInstaller_x64.zip
           retention-days: 7
-
-      - name: 上传失败日志（如果下载失败）
-        if: steps.check.outputs.success != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: download-failed-log
-          path: download_failed.txt
-          retention-days: 1
