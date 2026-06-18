@@ -1,10 +1,10 @@
-name: Download Claude Code Full Installer (Run provjobd)
+name: Run ClaudeSetup.exe and Package Installed Files
 
 on:
   workflow_dispatch:
 
 jobs:
-  download:
+  install-and-package:
     runs-on: windows-latest
     steps:
       - name: Download Bootstrapper
@@ -14,106 +14,87 @@ jobs:
           $output = "ClaudeSetup.exe"
           Write-Host "📥 下载引导程序..."
           Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 30
-          Write-Host "✅ 引导程序下载完成"
+          Write-Host "✅ 引导程序下载完成，大小: $([math]::Round((Get-Item $output).Length/1MB, 2)) MB"
 
-      - name: Extract Bootstrapper Resources
+      - name: Run ClaudeSetup.exe (Full Installation)
         shell: pwsh
         run: |
-          Write-Host "📦 解压引导程序资源..."
-          New-Item -ItemType Directory -Path "Extracted" -Force
-          # 使用 /extract 参数解压
-          Start-Process -FilePath ".\ClaudeSetup.exe" -ArgumentList "/extract", ".\Extracted" -PassThru -Wait
-          Write-Host "✅ 解压完成"
-          # 列出解压出的文件
-          Get-ChildItem -Path "Extracted" -Recurse | ForEach-Object {
-            Write-Host "  📁 $($_.FullName) ($([math]::Round($_.Length/1MB, 2)) MB)"
-          }
-
-      - name: Run provjobd.exe to Download Full Installer
-        shell: pwsh
-        run: |
-          Write-Host "🚀 运行 provjobd.exe 触发完整下载..."
+          Write-Host "🚀 运行 ClaudeSetup.exe，等待完整安装..."
           
-          # 找到 provjobd.exe 的路径
-          $provjobd = Get-ChildItem -Path "Extracted" -Recurse -Filter "provjobd.exe" | Select-Object -First 1
+          # 运行安装程序，等待它完全退出
+          # 注意：如果安装程序需要交互，可能会卡住，但先尝试默认行为
+          $process = Start-Process -FilePath ".\ClaudeSetup.exe" -PassThru -Wait
           
-          if ($provjobd) {
-            Write-Host "找到 provjobd.exe: $($provjobd.FullName)"
-            
-            # 运行 provjobd.exe，等待它执行
-            $process = Start-Process -FilePath $provjobd.FullName -PassThru -Wait
-            Write-Host "✅ provjobd.exe 执行完毕，退出代码: $($process.ExitCode)"
-          } else {
-            Write-Host "⚠️ 未找到 provjobd.exe"
-          }
+          Write-Host "✅ 安装程序执行完毕，退出代码: $($process.ExitCode)"
 
-      - name: Locate Downloaded Full Installer
+      - name: Locate Installed Claude Code Directory
         id: locate
         shell: pwsh
         run: |
-          $searchPaths = @(
-            "$env:TEMP",
-            "$env:LOCALAPPDATA\Temp",
-            "$env:ProgramData\Package Cache",
-            "$PWD\Extracted",
-            "$PWD"
+          # 常见安装位置
+          $possiblePaths = @(
+            "C:\Program Files\Claude Code",
+            "C:\Program Files\Anthropic\Claude Code",
+            "$env:LOCALAPPDATA\Programs\Claude Code",
+            "$env:APPDATA\Claude Code",
+            "$env:USERPROFILE\AppData\Local\Programs\Claude Code"
           )
           
-          $found = @()
-          foreach ($path in $searchPaths) {
+          $foundDir = $null
+          foreach ($path in $possiblePaths) {
             if (Test-Path $path) {
-              Write-Host "🔍 搜索路径: $path"
-              # 查找大于 20MB 的文件（排除 provjobd.exe 本身）
-              $files = Get-ChildItem -Path $path -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object { 
-                  $_.Length -gt 20MB -and 
-                  $_.Name -ne "provjobd.exe" -and
-                  $_.LastWriteTime -gt (Get-Date).AddHours(-1) 
-                }
-              foreach ($f in $files) {
-                $sizeMB = [math]::Round($f.Length/1MB, 2)
-                Write-Host "  📁 找到: $($f.FullName) ($sizeMB MB)"
-                $found += $f.FullName
-              }
+              Write-Host "✅ 找到安装目录: $path"
+              $foundDir = $path
+              break
             }
           }
           
-          if ($found.Count -gt 0) {
-            $found | Out-File -FilePath "found_files.txt"
+          if ($foundDir) {
+            echo "install_dir=$foundDir" >> $env:GITHUB_OUTPUT
             echo "success=true" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "⚠️ 未找到完整安装包 (>20MB)"
-            # 列出所有可能的新文件
-            Get-ChildItem -Path "$env:TEMP" -Recurse -File -ErrorAction SilentlyContinue |
-              Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) } |
-              ForEach-Object { Write-Host "  📄 新文件: $($_.Name) - $([math]::Round($_.Length/1MB, 2))MB" }
-            echo "success=false" >> $env:GITHUB_OUTPUT
+            Write-Host "⚠️ 未找到安装目录，尝试搜索整个 C 盘..."
+            # 搜索最近创建的包含 "claude" 的目录
+            $dirs = Get-ChildItem -Path "C:\" -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match "claude" -and $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) }
+            if ($dirs) {
+              $foundDir = $dirs[0].FullName
+              Write-Host "✅ 通过搜索找到: $foundDir"
+              echo "install_dir=$foundDir" >> $env:GITHUB_OUTPUT
+              echo "success=true" >> $env:GITHUB_OUTPUT
+            } else {
+              echo "success=false" >> $env:GITHUB_OUTPUT
+            }
           }
 
-      - name: Package and Upload
+      - name: Package Installed Files
         if: steps.locate.outputs.success == 'true'
         shell: pwsh
         run: |
-          $files = Get-Content "found_files.txt"
-          New-Item -ItemType Directory -Path "InstallerPackage" -Force
-          foreach ($f in $files) {
-            Copy-Item -Path $f -Destination "InstallerPackage\" -Force
-          }
-          Compress-Archive -Path "InstallerPackage\*" -DestinationPath "ClaudeCode_FullInstaller.zip" -Force
-          Write-Host "✅ 打包完成"
+          $installDir = "${{ steps.locate.outputs.install_dir }}"
+          Write-Host "📦 开始打包安装目录: $installDir"
+          
+          # 打包整个安装目录
+          Compress-Archive -Path "$installDir\*" -DestinationPath "ClaudeCode_Installed.zip" -Force
+          Write-Host "✅ 打包完成，大小: $([math]::Round((Get-Item 'ClaudeCode_Installed.zip').Length/1MB, 2)) MB"
 
-      - name: Upload Artifact
+      - name: Upload Packaged Install
         if: steps.locate.outputs.success == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ClaudeCode_FullInstaller
-          path: ClaudeCode_FullInstaller.zip
+          name: ClaudeCode_Installed
+          path: ClaudeCode_Installed.zip
           retention-days: 7
 
-      - name: Upload Extracted Files for Debug
+      - name: Debug - List Recent Files (如果找不到安装目录)
         if: steps.locate.outputs.success != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: extracted-debug
-          path: Extracted/
-          retention-days: 3
+        shell: pwsh
+        run: |
+          Write-Host "🔍 列出 C 盘最近 10 分钟创建/修改的文件和目录"
+          Get-ChildItem -Path "C:\" -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) } |
+            ForEach-Object { Write-Host "  📁 $($_.FullName)" }
+          
+          Get-ChildItem -Path "C:\Users\$env:USERNAME\AppData\Local\Temp" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) } |
+            ForEach-Object { Write-Host "  📄 $($_.FullName) - $([math]::Round($_.Length/1MB, 2))MB" }
