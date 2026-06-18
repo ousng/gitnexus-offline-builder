@@ -1,4 +1,4 @@
-name: Download Claude Code Full Installer (Windows x64)
+name: Download Claude Code Full Installer (Run provjobd)
 
 on:
   workflow_dispatch:
@@ -12,36 +12,42 @@ jobs:
         run: |
           $url = "https://downloads.claude.ai/releases/win32/x64/1.13576.1/ClaudeSetup-772d01ffc175c3795a49154acdecf043d634b5d1.exe"
           $output = "ClaudeSetup.exe"
-          Write-Host "📥 开始下载引导程序..."
-          Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 30 -ErrorAction Stop
-          $size = [math]::Round((Get-Item $output).Length / 1MB, 2)
-          Write-Host "✅ 引导程序下载完成，大小: $size MB"
+          Write-Host "📥 下载引导程序..."
+          Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 30
+          Write-Host "✅ 引导程序下载完成"
 
-      - name: Run Bootstrapper (Interactive Mode)
+      - name: Extract Bootstrapper Resources
         shell: pwsh
         run: |
-          Write-Host "🚀 启动引导程序（使用默认模式，等待进程结束）..."
-          
-          # 使用 -Wait 等待进程退出，但不用 -Timeout
-          $process = Start-Process -FilePath ".\ClaudeSetup.exe" -PassThru -Wait
-          
-          Write-Host "✅ 引导程序执行完毕，退出代码: $($process.ExitCode)"
+          Write-Host "📦 解压引导程序资源..."
+          New-Item -ItemType Directory -Path "Extracted" -Force
+          # 使用 /extract 参数解压
+          Start-Process -FilePath ".\ClaudeSetup.exe" -ArgumentList "/extract", ".\Extracted" -PassThru -Wait
+          Write-Host "✅ 解压完成"
+          # 列出解压出的文件
+          Get-ChildItem -Path "Extracted" -Recurse | ForEach-Object {
+            Write-Host "  📁 $($_.FullName) ($([math]::Round($_.Length/1MB, 2)) MB)"
+          }
 
-      - name: Run Bootstrapper with Extract Option (尝试提取模式)
-        id: extract
+      - name: Run provjobd.exe to Download Full Installer
         shell: pwsh
         run: |
-          Write-Host "🔄 尝试使用 /extract 参数运行..."
+          Write-Host "🚀 运行 provjobd.exe 触发完整下载..."
           
-          # 创建输出目录
-          New-Item -ItemType Directory -Path "ExtractedInstaller" -Force
+          # 找到 provjobd.exe 的路径
+          $provjobd = Get-ChildItem -Path "Extracted" -Recurse -Filter "provjobd.exe" | Select-Object -First 1
           
-          # 尝试 /extract 参数（常见于很多安装程序）
-          $process = Start-Process -FilePath ".\ClaudeSetup.exe" -ArgumentList "/extract", "ExtractedInstaller" -PassThru -Wait
-          
-          Write-Host "提取程序退出代码: $($process.ExitCode)"
+          if ($provjobd) {
+            Write-Host "找到 provjobd.exe: $($provjobd.FullName)"
+            
+            # 运行 provjobd.exe，等待它执行
+            $process = Start-Process -FilePath $provjobd.FullName -PassThru -Wait
+            Write-Host "✅ provjobd.exe 执行完毕，退出代码: $($process.ExitCode)"
+          } else {
+            Write-Host "⚠️ 未找到 provjobd.exe"
+          }
 
-      - name: Locate Downloaded Files
+      - name: Locate Downloaded Full Installer
         id: locate
         shell: pwsh
         run: |
@@ -49,7 +55,7 @@ jobs:
             "$env:TEMP",
             "$env:LOCALAPPDATA\Temp",
             "$env:ProgramData\Package Cache",
-            "$PWD\ExtractedInstaller",
+            "$PWD\Extracted",
             "$PWD"
           )
           
@@ -57,10 +63,11 @@ jobs:
           foreach ($path in $searchPaths) {
             if (Test-Path $path) {
               Write-Host "🔍 搜索路径: $path"
-              # 放宽条件：查找大于 10MB 的文件（引导程序本身是 6.69MB）
+              # 查找大于 20MB 的文件（排除 provjobd.exe 本身）
               $files = Get-ChildItem -Path $path -Recurse -File -ErrorAction SilentlyContinue |
                 Where-Object { 
-                  $_.Length -gt 10MB -and 
+                  $_.Length -gt 20MB -and 
+                  $_.Name -ne "provjobd.exe" -and
                   $_.LastWriteTime -gt (Get-Date).AddHours(-1) 
                 }
               foreach ($f in $files) {
@@ -75,11 +82,11 @@ jobs:
             $found | Out-File -FilePath "found_files.txt"
             echo "success=true" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "⚠️ 未找到任何大文件（>10MB），可能下载失败或文件已被清理。"
-            # 列出 Temp 目录下的所有文件以便调试
+            Write-Host "⚠️ 未找到完整安装包 (>20MB)"
+            # 列出所有可能的新文件
             Get-ChildItem -Path "$env:TEMP" -Recurse -File -ErrorAction SilentlyContinue |
-              Where-Object { $_.Length -gt 1MB } |
-              ForEach-Object { Write-Host "  📄 Temp中存在: $($_.Name) - $([math]::Round($_.Length/1MB, 2))MB" }
+              Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-10) } |
+              ForEach-Object { Write-Host "  📄 新文件: $($_.Name) - $([math]::Round($_.Length/1MB, 2))MB" }
             echo "success=false" >> $env:GITHUB_OUTPUT
           }
 
@@ -89,28 +96,24 @@ jobs:
         run: |
           $files = Get-Content "found_files.txt"
           New-Item -ItemType Directory -Path "InstallerPackage" -Force
-          
           foreach ($f in $files) {
             Copy-Item -Path $f -Destination "InstallerPackage\" -Force
           }
-          
-          Compress-Archive -Path "InstallerPackage\*" -DestinationPath "ClaudeCode_FullInstaller_x64.zip" -Force
+          Compress-Archive -Path "InstallerPackage\*" -DestinationPath "ClaudeCode_FullInstaller.zip" -Force
           Write-Host "✅ 打包完成"
 
       - name: Upload Artifact
         if: steps.locate.outputs.success == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ClaudeCode_x64_FullInstaller
-          path: ClaudeCode_FullInstaller_x64.zip
+          name: ClaudeCode_FullInstaller
+          path: ClaudeCode_FullInstaller.zip
           retention-days: 7
 
-      - name: Upload Debug Info (如果失败)
+      - name: Upload Extracted Files for Debug
         if: steps.locate.outputs.success != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: debug-info
-          path: |
-            *.exe
-            ExtractedInstaller/
-          retention-days: 1
+          name: extracted-debug
+          path: Extracted/
+          retention-days: 3
