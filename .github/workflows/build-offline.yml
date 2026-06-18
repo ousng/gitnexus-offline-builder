@@ -7,40 +7,39 @@ jobs:
   download:
     runs-on: windows-latest
     steps:
-      - name: Check System Architecture
-        shell: pwsh
-        run: |
-          Write-Host "🏗️ 系统架构: $env:PROCESSOR_ARCHITECTURE"
-          Write-Host "🖥️ 操作系统: $((Get-CimInstance Win32_OperatingSystem).Caption)"
-
       - name: Download Bootstrapper
         shell: pwsh
         run: |
           $url = "https://downloads.claude.ai/releases/win32/x64/1.13576.1/ClaudeSetup-772d01ffc175c3795a49154acdecf043d634b5d1.exe"
           $output = "ClaudeSetup.exe"
-          
           Write-Host "📥 开始下载引导程序..."
           Invoke-WebRequest -Uri $url -OutFile $output -TimeoutSec 30 -ErrorAction Stop
-          
-          if (Test-Path $output) {
-            $size = [math]::Round((Get-Item $output).Length / 1MB, 2)
-            Write-Host "✅ 引导程序下载完成，大小: $size MB"
-          }
+          $size = [math]::Round((Get-Item $output).Length / 1MB, 2)
+          Write-Host "✅ 引导程序下载完成，大小: $size MB"
 
-      - name: Run Bootstrapper and Capture Files
+      - name: Run Bootstrapper (Interactive Mode)
         shell: pwsh
         run: |
-          Write-Host "🚀 启动引导程序（静默模式）..."
+          Write-Host "🚀 启动引导程序（使用默认模式，等待进程结束）..."
           
-          # 尝试静默运行，并等待最多 5 分钟
-          try {
-            $process = Start-Process -FilePath ".\ClaudeSetup.exe" `
-              -ArgumentList "/quiet", "/norestart", "/log", "install.log" `
-              -PassThru -Wait -Timeout 300
-            Write-Host "✅ 引导程序执行完毕，退出代码: $($process.ExitCode)"
-          } catch {
-            Write-Host "⚠️ 引导程序执行异常: $_"
-          }
+          # 使用 -Wait 等待进程退出，但不用 -Timeout
+          $process = Start-Process -FilePath ".\ClaudeSetup.exe" -PassThru -Wait
+          
+          Write-Host "✅ 引导程序执行完毕，退出代码: $($process.ExitCode)"
+
+      - name: Run Bootstrapper with Extract Option (尝试提取模式)
+        id: extract
+        shell: pwsh
+        run: |
+          Write-Host "🔄 尝试使用 /extract 参数运行..."
+          
+          # 创建输出目录
+          New-Item -ItemType Directory -Path "ExtractedInstaller" -Force
+          
+          # 尝试 /extract 参数（常见于很多安装程序）
+          $process = Start-Process -FilePath ".\ClaudeSetup.exe" -ArgumentList "/extract", "ExtractedInstaller" -PassThru -Wait
+          
+          Write-Host "提取程序退出代码: $($process.ExitCode)"
 
       - name: Locate Downloaded Files
         id: locate
@@ -50,21 +49,23 @@ jobs:
             "$env:TEMP",
             "$env:LOCALAPPDATA\Temp",
             "$env:ProgramData\Package Cache",
-            "$PWD"  # 当前工作目录
+            "$PWD\ExtractedInstaller",
+            "$PWD"
           )
           
           $found = @()
           foreach ($path in $searchPaths) {
             if (Test-Path $path) {
               Write-Host "🔍 搜索路径: $path"
-              # 查找大于 50MB 且最近 1 小时创建的文件
+              # 放宽条件：查找大于 10MB 的文件（引导程序本身是 6.69MB）
               $files = Get-ChildItem -Path $path -Recurse -File -ErrorAction SilentlyContinue |
                 Where-Object { 
-                  $_.Length -gt 50MB -and 
+                  $_.Length -gt 10MB -and 
                   $_.LastWriteTime -gt (Get-Date).AddHours(-1) 
                 }
               foreach ($f in $files) {
-                Write-Host "  📁 找到: $($f.FullName) ($([math]::Round($f.Length/1MB,2)) MB)"
+                $sizeMB = [math]::Round($f.Length/1MB, 2)
+                Write-Host "  📁 找到: $($f.FullName) ($sizeMB MB)"
                 $found += $f.FullName
               }
             }
@@ -74,7 +75,11 @@ jobs:
             $found | Out-File -FilePath "found_files.txt"
             echo "success=true" >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host "⚠️ 未找到任何大文件（>50MB），可能下载失败或文件已被清理。"
+            Write-Host "⚠️ 未找到任何大文件（>10MB），可能下载失败或文件已被清理。"
+            # 列出 Temp 目录下的所有文件以便调试
+            Get-ChildItem -Path "$env:TEMP" -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Length -gt 1MB } |
+              ForEach-Object { Write-Host "  📄 Temp中存在: $($_.Name) - $([math]::Round($_.Length/1MB, 2))MB" }
             echo "success=false" >> $env:GITHUB_OUTPUT
           }
 
@@ -90,7 +95,7 @@ jobs:
           }
           
           Compress-Archive -Path "InstallerPackage\*" -DestinationPath "ClaudeCode_FullInstaller_x64.zip" -Force
-          Write-Host "✅ 打包完成，文件大小: $([math]::Round((Get-Item 'ClaudeCode_FullInstaller_x64.zip').Length/1MB, 2)) MB"
+          Write-Host "✅ 打包完成"
 
       - name: Upload Artifact
         if: steps.locate.outputs.success == 'true'
@@ -99,3 +104,13 @@ jobs:
           name: ClaudeCode_x64_FullInstaller
           path: ClaudeCode_FullInstaller_x64.zip
           retention-days: 7
+
+      - name: Upload Debug Info (如果失败)
+        if: steps.locate.outputs.success != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-info
+          path: |
+            *.exe
+            ExtractedInstaller/
+          retention-days: 1
