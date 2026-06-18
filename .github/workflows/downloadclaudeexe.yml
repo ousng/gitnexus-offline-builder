@@ -12,14 +12,19 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "📦 下载 zstd 工具..."
-          # 从 GitHub 直接下载 zstd 的 Windows 二进制文件
           $zstdUrl = "https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-v1.5.6-win64.zip"
           Invoke-WebRequest -Uri $zstdUrl -OutFile "zstd.zip"
           Expand-Archive -Path "zstd.zip" -DestinationPath "zstd"
-          # 将 zstd.exe 所在的目录添加到 PATH，方便后续调用
-          $zstdPath = Join-Path (Get-Location) "zstd"
-          $env:PATH = "$zstdPath;$env:PATH"
-          Write-Host "✅ zstd 准备完成"
+          # 查看解压后的目录结构，确认 zstd.exe 的实际位置
+          Get-ChildItem -Path "zstd" -Recurse
+          # 将 zstd.exe 所在目录添加到环境变量 PATH
+          $zstdDir = Get-ChildItem -Path "zstd" -Directory | Select-Object -First 1
+          if ($zstdDir) {
+            $env:PATH = "$($zstdDir.FullName);$env:PATH"
+            Write-Host "✅ zstd 路径已添加: $($zstdDir.FullName)"
+          } else {
+            Write-Host "⚠️ 未找到 zstd 目录，使用当前路径"
+          }
 
       - name: Download claude.exe.zst
         shell: pwsh
@@ -34,9 +39,28 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "📦 解压 claude.exe.zst..."
-          # 使用直接下载的 zstd 解压
-          .\zstd\zstd.exe -d claude.exe.zst -o claude.exe
-          Write-Host "✅ 解压完成，文件大小: $([math]::Round((Get-Item 'claude.exe').Length / 1MB, 2)) MB"
+          # 先找到 zstd.exe 的确切位置
+          $zstdExe = Get-ChildItem -Path "zstd" -Recurse -Filter "zstd.exe" | Select-Object -First 1
+          if ($zstdExe) {
+            Write-Host "找到 zstd.exe: $($zstdExe.FullName)"
+            # 使用完整路径执行解压
+            & $zstdExe.FullName -d claude.exe.zst -o claude.exe
+            Write-Host "✅ 解压完成"
+          } else {
+            Write-Host "⚠️ 未找到 zstd.exe"
+            exit 1
+          }
+
+      - name: Check extracted file
+        shell: pwsh
+        run: |
+          if (Test-Path "claude.exe") {
+            $size = [math]::Round((Get-Item "claude.exe").Length / 1MB, 2)
+            Write-Host "✅ claude.exe 解压成功，大小: $size MB"
+          } else {
+            Write-Host "⚠️ claude.exe 未找到"
+            exit 1
+          }
 
       - name: Package as ZIP
         shell: pwsh
