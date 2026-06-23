@@ -6,7 +6,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: oraclelinux:8-slim
+    container:
+      image: oraclelinux:8    # ← 去掉 -slim
+      options: --user root
     steps:
       - name: Install deps
         run: |
