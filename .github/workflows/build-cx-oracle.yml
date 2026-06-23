@@ -1,94 +1,37 @@
-name: Build cx_Oracle Wheel for RHEL8
+name: Build cx_Oracle (Manual)
 
 on:
-  workflow_dispatch:  # 仅手动触发，避免浪费 Actions 额度
-  push:
-    tags:
-      - 'v*'          # 打 tag 时自动触发
-
-env:
-  PYTHON_VERSION: "3.11"
-  CX_ORACLE_VERSION: "8.3.0"
-  ORACLE_IC_VERSION: "21.22.0.0.0"
+  workflow_dispatch:
 
 jobs:
-  build-wheel:
-    name: Build cx_Oracle ${{ env.CX_ORACLE_VERSION }} (OL8 / Py${{ env.PYTHON_VERSION }})
+  build:
     runs-on: ubuntu-latest
-    
-    container:
-      image: oraclelinux:8-slim
-      options: --user root
-
+    container: oraclelinux:8-slim
     steps:
-      # ✅ 步骤1: 安装 slim 镜像缺失的基础工具 (修复 tar/gzip/git 报错)
-      - name: Install system prerequisites
+      - name: Install deps
         run: |
-          set -euo pipefail
-          dnf install -y \
-            gzip tar git-core findutils \
-            gcc make python${PYTHON_VERSION}-devel \
-            oracle-instantclient-release-el8
+          dnf install -y gzip tar git-core gcc make python3.11-devel oracle-instantclient-release-el8
           dnf config-manager --enable ol8_oracle_instantclient
-          dnf install -y \
-            oracle-instantclient-basic-${ORACLE_IC_VERSION} \
-            oracle-instantclient-devel-${ORACLE_IC_VERSION}
-          dnf clean all
+          dnf install -y oracle-instantclient-basic-21.22.0.0.0 oracle-instantclient-devel-21.22.0.0.0
           ldconfig
 
-      # ✅ 步骤2: 拉取代码 (现在不会因缺少 gzip/git 而失败)
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ 步骤3: 设置 Oracle 编译环境变量
-      - name: Configure Oracle environment
-        run: |
-          echo "ORACLE_HOME=/usr/lib/oracle/${ORACLE_IC_VERSION%%.*}/client64" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/lib/oracle/${ORACLE_IC_VERSION%%.*}/client64/lib" >> $GITHUB_ENV
-          echo "/usr/lib/oracle/${ORACLE_IC_VERSION%%.*}/client64/lib" > /etc/ld.so.conf.d/oracle-instantclient.conf
-          ldconfig
-
-      # ✅ 步骤4: 编译 cx_Oracle wheel
-      - name: Build cx_Oracle wheel
+      - name: Build wheel
         env:
-          ORACLE_HOME: ${{ env.ORACLE_HOME }}
-          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
+          ORACLE_HOME: /usr/lib/oracle/21/client64
+          LD_LIBRARY_PATH: /usr/lib/oracle/21/client64/lib
         run: |
-          set -euo pipefail
-          python${PYTHON_VERSION} -m pip install --upgrade pip setuptools wheel
-          python${PYTHON_VERSION} -m pip download cx_Oracle==${CX_ORACLE_VERSION} \
-            --no-binary cx_Oracle --no-deps -d /tmp/cx_src
-          
-          cd /tmp/cx_src
-          tar xzf cx_Oracle-*.tar.gz
-          cd cx_Oracle-*
-          
-          python${PYTHON_VERSION} setup.py bdist_wheel
-          
-          # 将产物复制到工作目录
+          python3.11 -m pip install --upgrade pip setuptools wheel
+          pip download cx_Oracle==8.3.0 --no-binary cx_Oracle --no-deps -d /tmp/src
+          cd /tmp/src && tar xzf cx_Oracle-*.tar.gz && cd cx_Oracle-*
+          python3.11 setup.py bdist_wheel
           mkdir -p $GITHUB_WORKSPACE/dist
           cp dist/*.whl $GITHUB_WORKSPACE/dist/
-          ls -lh $GITHUB_WORKSPACE/dist/
 
-      # ✅ 步骤5: 验证 wheel 可用性
-      - name: Verify built wheel
-        env:
-          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
-        run: |
-          python${PYTHON_VERSION} -m pip install $GITHUB_WORKSPACE/dist/cx_Oracle-*.whl
-          python${PYTHON_VERSION} -c "
-          import cx_Oracle
-          assert cx_Oracle.version == '${CX_ORACLE_VERSION}', f'Version mismatch: {cx_Oracle.version}'
-          client_ver = cx_Oracle.clientversion()
-          print(f'✅ cx_Oracle {cx_Oracle.version}')
-          print(f'✅ OCI Client {client_ver}')
-          assert client_ver[0] == 21, f'Unexpected OCI major version: {client_ver[0]}'
-          "
-
-      # ✅ 步骤6: 上传构建产物
-      - name: Upload wheel artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cx_Oracle-${{ env.CX_ORACLE_VERSION }}-py${{ env.PYTHON_VERSION }}-ol8
+          name: cx_oracle_8.3.0_py311_ol8
           path: dist/*.whl
-          retention-days: 30
