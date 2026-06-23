@@ -1,53 +1,94 @@
-name: Build cx_Oracle 8.3.0 for RHEL8 Py311
+name: Build cx_Oracle Wheel for RHEL8
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:  # 仅手动触发，避免浪费 Actions 额度
   push:
     tags:
-      - 'v*'
+      - 'v*'          # 打 tag 时自动触发
+
+env:
+  PYTHON_VERSION: "3.11"
+  CX_ORACLE_VERSION: "8.3.0"
+  ORACLE_IC_VERSION: "21.22.0.0.0"
 
 jobs:
   build-wheel:
+    name: Build cx_Oracle ${{ env.CX_ORACLE_VERSION }} (OL8 / Py${{ env.PYTHON_VERSION }})
     runs-on: ubuntu-latest
+    
     container:
       image: oraclelinux:8-slim
       options: --user root
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Python 3.11 & Oracle Instant Client SDK
+      # ✅ 步骤1: 安装 slim 镜像缺失的基础工具 (修复 tar/gzip/git 报错)
+      - name: Install system prerequisites
         run: |
-          # 1. 安装 Oracle Instant Client 21.x (兼容 cx_Oracle 8.3.0)
-          dnf install -y oracle-release-el8
-          dnf config-manager --enable ol8_oracle_instantclient21
-          dnf install -y oracle-instantclient21-devel gcc make python3.11-devel
-
-          # 2. 设置环境变量
-          echo "/usr/lib/oracle/21/client64/lib" > /etc/ld.so.conf.d/oracle-instantclient.conf
+          set -euo pipefail
+          dnf install -y \
+            gzip tar git-core findutils \
+            gcc make python${PYTHON_VERSION}-devel \
+            oracle-instantclient-release-el8
+          dnf config-manager --enable ol8_oracle_instantclient
+          dnf install -y \
+            oracle-instantclient-basic-${ORACLE_IC_VERSION} \
+            oracle-instantclient-devel-${ORACLE_IC_VERSION}
+          dnf clean all
           ldconfig
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11.9'
+      # ✅ 步骤2: 拉取代码 (现在不会因缺少 gzip/git 而失败)
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Build Wheel
-        env:
-          ORACLE_HOME: /usr/lib/oracle/21/client64
-          LD_LIBRARY_PATH: /usr/lib/oracle/21/client64/lib
+      # ✅ 步骤3: 设置 Oracle 编译环境变量
+      - name: Configure Oracle environment
         run: |
-          pip install wheel setuptools
-          pip download cx_Oracle==8.3.0 --no-binary :all: -d ./src
-          tar xzf src/cx_Oracle-8.3.0.tar.gz -C ./src
-          cd src/cx_Oracle-8.3.0
-          python setup.py bdist_wheel
-          ls -la dist/
+          echo "ORACLE_HOME=/usr/lib/oracle/${ORACLE_IC_VERSION%%.*}/client64" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/lib/oracle/${ORACLE_IC_VERSION%%.*}/client64/lib" >> $GITHUB_ENV
+          echo "/usr/lib/oracle/${ORACLE_IC_VERSION%%.*}/client64/lib" > /etc/ld.so.conf.d/oracle-instantclient.conf
+          ldconfig
 
-      - name: Upload Wheel Artifact
+      # ✅ 步骤4: 编译 cx_Oracle wheel
+      - name: Build cx_Oracle wheel
+        env:
+          ORACLE_HOME: ${{ env.ORACLE_HOME }}
+          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
+        run: |
+          set -euo pipefail
+          python${PYTHON_VERSION} -m pip install --upgrade pip setuptools wheel
+          python${PYTHON_VERSION} -m pip download cx_Oracle==${CX_ORACLE_VERSION} \
+            --no-binary cx_Oracle --no-deps -d /tmp/cx_src
+          
+          cd /tmp/cx_src
+          tar xzf cx_Oracle-*.tar.gz
+          cd cx_Oracle-*
+          
+          python${PYTHON_VERSION} setup.py bdist_wheel
+          
+          # 将产物复制到工作目录
+          mkdir -p $GITHUB_WORKSPACE/dist
+          cp dist/*.whl $GITHUB_WORKSPACE/dist/
+          ls -lh $GITHUB_WORKSPACE/dist/
+
+      # ✅ 步骤5: 验证 wheel 可用性
+      - name: Verify built wheel
+        env:
+          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
+        run: |
+          python${PYTHON_VERSION} -m pip install $GITHUB_WORKSPACE/dist/cx_Oracle-*.whl
+          python${PYTHON_VERSION} -c "
+          import cx_Oracle
+          assert cx_Oracle.version == '${CX_ORACLE_VERSION}', f'Version mismatch: {cx_Oracle.version}'
+          client_ver = cx_Oracle.clientversion()
+          print(f'✅ cx_Oracle {cx_Oracle.version}')
+          print(f'✅ OCI Client {client_ver}')
+          assert client_ver[0] == 21, f'Unexpected OCI major version: {client_ver[0]}'
+          "
+
+      # ✅ 步骤6: 上传构建产物
+      - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cx_Oracle-8.3.0-cp311-rhel8
-          path: src/cx_Oracle-8.3.0/dist/*.whl
+          name: cx_Oracle-${{ env.CX_ORACLE_VERSION }}-py${{ env.PYTHON_VERSION }}-ol8
+          path: dist/*.whl
           retention-days: 30
