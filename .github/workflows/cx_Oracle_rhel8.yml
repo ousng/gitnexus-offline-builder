@@ -1,0 +1,53 @@
+name: Build cx_Oracle 8.3.0 for RHEL8 Py311
+
+on:
+  workflow_dispatch: # 手动触发
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-wheel:
+    runs-on: ubuntu-latest
+    container:
+      image: oraclelinux:8-slim
+      options: --user root
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python 3.11 & Oracle Instant Client SDK
+        run: |
+          # 1. 安装 Oracle Instant Client 21.x (兼容 cx_Oracle 8.3.0)
+          dnf install -y oracle-release-el8
+          dnf config-manager --enable ol8_oracle_instantclient21
+          dnf install -y oracle-instantclient21-devel gcc make python3.11-devel
+
+          # 2. 设置环境变量
+          echo "/usr/lib/oracle/21/client64/lib" > /etc/ld.so.conf.d/oracle-instantclient.conf
+          ldconfig
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: Build Wheel
+        env:
+          ORACLE_HOME: /usr/lib/oracle/21/client64
+          LD_LIBRARY_PATH: /usr/lib/oracle/21/client64/lib
+        run: |
+          pip install wheel setuptools
+          pip download cx_Oracle==8.3.0 --no-binary :all: -d ./src
+          tar xzf src/cx_Oracle-8.3.0.tar.gz -C ./src
+          cd src/cx_Oracle-8.3.0
+          python setup.py bdist_wheel
+          ls -la dist/
+
+      - name: Upload Wheel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cx_Oracle-8.3.0-cp311-rhel8
+          path: src/cx_Oracle-8.3.0/dist/*.whl
+          retention-days: 30
